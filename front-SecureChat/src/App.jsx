@@ -1,5 +1,6 @@
 import io from 'socket.io-client'
 import { useState, useEffect } from 'react'
+import CryptoJS from 'crypto-js';
 
 const socket = io("/")
 
@@ -7,10 +8,11 @@ function App() {
 
   const [message, setMessage] = useState('')
   const[messages, setMessages] = useState([])
-  console.log(messages)
 
   const handleSubmit = (e) => {
     e.preventDefault();
+
+    const encryptedMessage = CryptoJS.AES.encrypt(message, 'your-secret-key').toString();
 
     const newMessage = {
       body: message,
@@ -18,7 +20,7 @@ function App() {
     }
 
     setMessages([... messages, newMessage])
-    socket.emit('message', message)
+    socket.emit('message', encryptedMessage)
   }
 
   useEffect(() => {
@@ -29,8 +31,19 @@ function App() {
     }
   }, []);
 
-  const reciveMessage = (message) => 
-    setMessages((state) => [...state, message])
+    const reciveMessage = (message) => {
+      console.log(message)
+      const decryptedMessage = CryptoJS.AES.decrypt(message.body, 'your-secret-key').toString(CryptoJS.enc.Utf8);
+      const nMss = {
+        body: decryptedMessage,
+        from: message.from
+      }
+      setMessages((state) => [...state, nMss])
+      console.log(state)
+      
+    }
+    
+      
 
   return (
     <div className="h-screen bg-zinc-800 text-white flex items-center justify-center">
