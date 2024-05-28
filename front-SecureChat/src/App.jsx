@@ -2,7 +2,8 @@ import io from 'socket.io-client'
 import { useState, useEffect } from 'react'
 import CryptoJS from 'crypto-js';
 
-const socket = io("/")
+
+const socket = io("http://172.30.171.18:4000");
 
 function App() {
 
@@ -39,7 +40,6 @@ function App() {
         from: message.from
       }
       setMessages((state) => [...state, nMss])
-      console.log(state)
       
     }
     
