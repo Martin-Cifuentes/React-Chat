@@ -2,7 +2,7 @@ import io from 'socket.io-client'
 import { useState, useEffect, useRef } from 'react'
 import CryptoJS from 'crypto-js';
 
-const socket = io("http://172.30.171.18:4000");
+const socket = io("server_ip");
 
 function App() {
 
