@@ -2,7 +2,10 @@ import io from 'socket.io-client'
 import { useState, useEffect, useRef } from 'react'
 import CryptoJS from 'crypto-js';
 
-const socket = io("server_ip");
+const SERVER_IP = import.meta.env.VITE_REACT_APP_SERVER_IP;
+const SERVER_PORT = import.meta.env.VITE_REACT_APP_SERVER_PORT;
+
+const socket = io(`http://${SERVER_IP}:${SERVER_PORT}`);
 
 function App() {
 
@@ -15,11 +18,13 @@ function App() {
 
     let messageToSend = ''
     if(message === ''){
-      messageToSend = '( ͡° ͜ʖ ͡°)'
-    }else if(message === 'Lenny'){
       messageToSend = '( ⚆ _ ⚆ )'
+    }else if(message === 'Lenny'){
+      messageToSend = '( ͡° ͜ʖ ͡°)'
     }else if(message === 'Madrid'){
       messageToSend = 'ヾ(o◕ω ◕)ﾉ'
+    }else{
+      messageToSend = message
     }
 
     const encryptedMessage = CryptoJS.AES.encrypt(messageToSend, 'your-secret-key').toString();
