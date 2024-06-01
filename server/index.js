@@ -1,9 +1,10 @@
-import express from "express";
-import http from 'http';
-import { Server as SocketServer } from "socket.io";
-import cors from 'cors';
-import crypto from 'crypto';
+import express from "express"; //Para la creación de la aplicación web
+import http from 'http';//Para la creación del servidor HTTP
+import { Server as SocketServer } from "socket.io";// Para la comunicación en tiempo real
+import cors from 'cors';//Middleware para manejar la conecciónentre diferentes dispositivos
+import crypto from 'crypto';//Para encriptar los  mensajes
 
+//Creación de una instancia de express
 const app = express();
 
 // Configurar CORS para permitir solicitudes desde cualquier origen
@@ -11,7 +12,10 @@ app.use(cors({
   origin: '*'
 }));
 
+//Creación del servidor HTTP
 const server = http.createServer(app);
+
+
 const io = new SocketServer(server, {
   cors: {
     origin: "*", // Permitir todas las conexiones
