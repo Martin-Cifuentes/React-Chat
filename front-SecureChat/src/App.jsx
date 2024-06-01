@@ -1,12 +1,15 @@
-import io from 'socket.io-client';
-import { useState, useEffect, useRef } from 'react';
-import CryptoJS from 'crypto-js';
+import io from 'socket.io-client'; // Importa la biblioteca para la conexión con el servidor Socket.io
+import { useState, useEffect, useRef } from 'react'; // Importa hooks de React
+import CryptoJS from 'crypto-js'; // Importa la biblioteca CryptoJS para cifrado
 
+//Se obtienen ip y puerto del servidor del .env
 const SERVER_IP = import.meta.env.VITE_REACT_APP_SERVER_IP;
 const SERVER_PORT = import.meta.env.VITE_REACT_APP_SERVER_PORT;
 
+//Inicializa la conexión Socket.io con el servidor
 const socket = io(`http://${SERVER_IP}:${SERVER_PORT}`);
 
+//Se genera un par de claves, se usa el algoritmo de Diffie-Hellman de curva elíptica P-256
 async function generateKeyPair() {
   return await window.crypto.subtle.generateKey(
     {
@@ -18,10 +21,12 @@ async function generateKeyPair() {
   );
 }
 
+//Exporta la clave del cliente
 async function exportKey(key) {
   return window.crypto.subtle.exportKey("raw", key);
 }
 
+//Importa la clave del servidor
 async function importKey(keyData) {
   return window.crypto.subtle.importKey(
     "raw",
@@ -33,23 +38,26 @@ async function importKey(keyData) {
 }
 
 function App() {
-  const [message, setMessage] = useState('');
-  const [messages, setMessages] = useState([]);
-  const [sharedSecret, setSharedSecret] = useState('');
-  const messagesEndRef = useRef(null);
+  const [message, setMessage] = useState(''); //Mensaje actual en el input
+  const [messages, setMessages] = useState([]); //Lista de mensajes en la conversación
+  const [sharedSecret, setSharedSecret] = useState(''); //Clave secreta compartida
+  const messagesEndRef = useRef(null); //Referencia para el final de la lista de mensajes
 
   useEffect(() => {
     let clientPublicKey, clientPrivateKey, clientKeyPair;
     let serverPublicKey;
 
+
     async function negotiateKeys() {
-      clientKeyPair = await generateKeyPair();
-      clientPublicKey = await exportKey(clientKeyPair.publicKey);
-      socket.emit('client-public-key', clientPublicKey);
+      clientKeyPair = await generateKeyPair(); //Genera un par de claves ECDH
+      clientPublicKey = await exportKey(clientKeyPair.publicKey); //Exporta la clave pública
+      socket.emit('client-public-key', clientPublicKey); //Envía la clave pública al servidor
     }
 
+    //Cuando el cliente se conecta, negocia las claves
     socket.on('connect', negotiateKeys);
 
+    // Importa la clave pública del servidor y la almacena
     socket.on('public-key', async (serverPublicKeyBase64) => {
       serverPublicKey = await importKey(Uint8Array.from(atob(serverPublicKeyBase64), c => c.charCodeAt(0)));
       const sharedSecretBits = await window.crypto.subtle.deriveBits(
@@ -75,6 +83,7 @@ function App() {
     };
   }, []);
 
+  // Maneja el envío de mensajes
   const handleSubmit = (e) => {
     e.preventDefault();
 
@@ -101,6 +110,7 @@ function App() {
     setMessage('');
   }
 
+  // Maneja la recepción de mensajes
   const receiveMessage = (encryptedMessage) => {
     const decryptedMessage = CryptoJS.AES.decrypt(encryptedMessage.body, sharedSecret).toString(CryptoJS.enc.Utf8);
     const nMss = {
