@@ -42,32 +42,30 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
           cache-dependency-path: |
-            client/package-lock.json
-            server/package-lock.json
+            front-SecureChat/package-lock.json
+            package-lock.json
 
       # ============================================
       # 3. INSTALAR DEPENDENCIAS
       # ============================================
       - name: Install client dependencies
-        working-directory: ./client
+        working-directory: ./front-SecureChat
         run: npm ci
 
       - name: Install server dependencies
-        working-directory: ./server
         run: npm ci
 
       # ============================================
       # 4. EJECUTAR TESTS Y GENERAR COBERTURA
       # ============================================
       - name: Run client tests with coverage
-        working-directory: ./client
+        working-directory: ./front-SecureChat
         run: npm test -- --coverage --watchAll=false --passWithNoTests
         continue-on-error: true
         env:
           CI: true
 
       - name: Run server tests with coverage
-        working-directory: ./server
         run: npm test -- --coverage --watchAll=false --passWithNoTests
         continue-on-error: true
         env:
@@ -77,12 +75,11 @@ jobs:
       # 5. CONSTRUIR APLICACIÓN
       # ============================================
       - name: Build client
-        working-directory: ./client
+        working-directory: ./front-SecureChat
         run: npm run build
         continue-on-error: true
 
       - name: Build server (si aplica)
-        working-directory: ./server
         run: |
           if [ -f "package.json" ] && grep -q "\"build\"" package.json; then
             npm run build
@@ -222,8 +219,8 @@ jobs:
         with:
           name: coverage-reports
           path: |
-            client/coverage/
-            server/coverage/
+            front-SecureChat/coverage/
+            coverage/
           retention-days: 30
 
       # ============================================
