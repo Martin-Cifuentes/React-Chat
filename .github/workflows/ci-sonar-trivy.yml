@@ -104,16 +104,15 @@ jobs:
           RUN npm run build
 
           FROM node:18-alpine AS server-build
-          WORKDIR /app/server
-          COPY server/package*.json ./
+          WORKDIR /app
+          COPY package*.json ./
           RUN npm ci --only=production
-          COPY server/ ./
+          COPY . ./
 
           FROM node:18-alpine
           WORKDIR /app
           COPY --from=client-build /app/front-SecureChat/build ./front-SecureChat/build
-          COPY --from=server-build /app/server ./server
-          WORKDIR /app/server
+          COPY --from=server-build /app ./
           EXPOSE 3001
           CMD ["node", "src/index.js"]
           EOF
@@ -192,11 +191,11 @@ jobs:
           # Ejecutar análisis
           sonar-scanner \
             -Dsonar.projectKey=react-chat \
-            -Dsonar.sources=front-SecureChat/src,server/src \
+            -Dsonar.sources=front-SecureChat/src,src \
             -Dsonar.host.url=$SONAR_HOST_URL \
             -Dsonar.token=$SONAR_TOKEN \
             -Dsonar.externalIssuesReportPaths=sonar-trivy.json \
-            -Dsonar.javascript.lcov.reportPaths=front-SecureChat/coverage/lcov.info,server/coverage/lcov.info \
+            -Dsonar.javascript.lcov.reportPaths=front-SecureChat/coverage/lcov.info,coverage/lcov.info \
             -Dsonar.scm.provider=git
 
       # ============================================
