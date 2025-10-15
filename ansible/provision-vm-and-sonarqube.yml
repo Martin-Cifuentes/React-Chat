@@ -1,0 +1,101 @@
+# SonarQube Project Configuration for React-Chat
+# ==============================================
+
+# Identificación del proyecto
+sonar.projectKey=react-chat
+sonar.projectName=React Chat Application
+sonar.projectVersion=1.0
+
+# Directorios de código fuente a analizar
+# Importante: paths relativos desde la raíz del repositorio
+sonar.sources=client/src,server/src
+
+# Exclusiones - archivos/directorios que NO deben analizarse
+sonar.exclusions=\
+  **/node_modules/**,\
+  **/build/**,\
+  **/dist/**,\
+  **/public/**,\
+  **/coverage/**,\
+  **/*.test.js,\
+  **/*.test.jsx,\
+  **/*.spec.js,\
+  **/*.spec.jsx,\
+  **/__tests__/**,\
+  **/__mocks__/**
+
+# Inclusiones de tests (opcional, para métricas de cobertura)
+sonar.tests=client/src,server/src
+sonar.test.inclusions=\
+  **/*.test.js,\
+  **/*.test.jsx,\
+  **/*.spec.js,\
+  **/*.spec.jsx
+
+# Encoding del código fuente
+sonar.sourceEncoding=UTF-8
+
+# Reportes de cobertura (si se generan con Jest)
+# Descomentar si tienes coverage habilitado
+# sonar.javascript.lcov.reportPaths=client/coverage/lcov.info,server/coverage/lcov.info
+
+# Reportes externos - Trivy vulnerabilities
+# Este archivo será generado por el pipeline CI
+sonar.externalIssuesReportPaths=sonar-trivy.json
+
+# Configuración de autenticación
+# IMPORTANTE: NO colocar el token directamente aquí
+# Debe pasarse como parámetro en el comando o variable de entorno
+# sonar.token será configurado via:
+#   - Variable de entorno: SONAR_TOKEN
+#   - Parámetro CLI: -Dsonar.token=tu# SonarQube Project Configuration for React-Chat
+# ==============================================
+
+# Identificación del proyecto
+sonar.projectKey=react-chat
+sonar.projectName=React Chat Application
+sonar.projectVersion=1.0
+
+# Directorios de código fuente a analizar
+# Importante: paths relativos desde la raíz del repositorio
+sonar.sources=client/src,server/src
+
+# Exclusiones - archivos/directorios que NO deben analizarse
+sonar.exclusions=\
+  **/node_modules/**,\
+  **/build/**,\
+  **/dist/**,\
+  **/public/**,\
+  **/coverage/**,\
+  **/*.test.js,\
+  **/*.test.jsx,\
+  **/*.spec.js,\
+  **/*.spec.jsx,\
+  **/__tests__/**,\
+  **/__mocks__/**
+
+# Inclusiones de tests (opcional, para métricas de cobertura)
+sonar.tests=client/src,server/src
+sonar.test.inclusions=\
+  **/*.test.js,\
+  **/*.test.jsx,\
+  **/*.spec.js,\
+  **/*.spec.jsx
+
+# Encoding del código fuente
+sonar.sourceEncoding=UTF-8
+
+# Reportes de cobertura (si se generan con Jest)
+# Descomentar si tienes coverage habilitado
+# sonar.javascript.lcov.reportPaths=client/coverage/lcov.info,server/coverage/lcov.info
+
+# Reportes externos - Trivy vulnerabilities
+# Este archivo será generado por el pipeline CI
+sonar.externalIssuesReportPaths=sonar-trivy.json
+
+# Configuración de autenticación
+# IMPORTANTE: NO colocar el token directamente aquí
+# Debe pasarse como parámetro en el comando o variable de entorno
+# sonar.token será configurado via:
+#   - Variable de entorno: SONAR_TOKEN
+#   - Parámetro CLI: -Dsonar.token=tu

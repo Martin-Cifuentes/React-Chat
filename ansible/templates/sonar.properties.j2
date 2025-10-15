@@ -1,0 +1,48 @@
+# Configuración SonarQube
+# Generado por Ansible
+
+# ============================================
+# DATABASE
+# ============================================
+sonar.jdbc.username={{ sonar_db_user }}
+sonar.jdbc.password={{ sonar_db_password }}
+sonar.jdbc.url=jdbc:postgresql://localhost:5432/{{ sonar_db_name }}
+
+# ============================================
+# WEB SERVER
+# ============================================
+sonar.web.host=0.0.0.0
+sonar.web.port=9000
+sonar.web.context=/
+
+# Aumentar timeout para proyectos grandes
+sonar.web.javaOpts=-Xmx2048m -Xms512m -XX:+HeapDumpOnOutOfMemoryError
+
+# ============================================
+# ELASTICSEARCH (Motor de búsqueda interno)
+# ============================================
+sonar.search.javaOpts=-Xmx1024m -Xms512m -XX:+HeapDumpOnOutOfMemoryError
+
+# ============================================
+# COMPUTE ENGINE (Análisis en background)
+# ============================================
+sonar.ce.javaOpts=-Xmx1536m -Xms512m -XX:+HeapDumpOnOutOfMemoryError
+
+# ============================================
+# PATHS
+# ============================================
+sonar.path.data={{ sonar_data_dir }}/data
+sonar.path.temp={{ sonar_data_dir }}/temp
+sonar.path.logs={{ sonar_data_dir }}/logs
+
+# ============================================
+# LOGGING
+# ============================================
+sonar.log.level=INFO
+sonar.path.logs={{ sonar_data_dir }}/logs
+
+# ============================================
+# OTHERS
+# ============================================
+# Deshabilitar telemetría (opcional)
+sonar.telemetry.enable=false

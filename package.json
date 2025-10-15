@@ -5,7 +5,8 @@
   "main": "index.js",
   "type": "module",
   "scripts": {
-    "dev": "nodemon server/index.js --ignore front-SecureChat"
+    "dev": "nodemon server/index.js --ignore front-SecureChat",
+    "sonar": "npx @sonar/scan"
   },
   "keywords": [],
   "author": "",
@@ -21,6 +22,7 @@
     "socket.io": "^4.7.5"
   },
   "devDependencies": {
+    "@sonar/scan": "^4.3.2",
     "nodemon": "^3.1.0"
   }
 }
