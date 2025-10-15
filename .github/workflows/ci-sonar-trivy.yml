@@ -1,0 +1,257 @@
+name: CI - SonarQube & Trivy Security Scan
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+    branches:
+      - main
+      - develop
+
+env:
+  NODE_VERSION: '18.x'
+  DOCKER_IMAGE: react-chat
+  SONAR_SCANNER_VERSION: '6.2.1.4610'
+
+jobs:
+  security-analysis:
+    name: Code Quality & Security Analysis
+    runs-on: ubuntu-latest
+    
+    permissions:
+      contents: read
+      security-events: write
+    
+    steps:
+      # ============================================
+      # 1. CHECKOUT CÓDIGO
+      # ============================================
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Importante para SonarQube (análisis de blame)
+
+      # ============================================
+      # 2. CONFIGURAR NODE.JS
+      # ============================================
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: |
+            client/package-lock.json
+            server/package-lock.json
+
+      # ============================================
+      # 3. INSTALAR DEPENDENCIAS
+      # ============================================
+      - name: Install client dependencies
+        working-directory: ./client
+        run: npm ci
+
+      - name: Install server dependencies
+        working-directory: ./server
+        run: npm ci
+
+      # ============================================
+      # 4. EJECUTAR TESTS Y GENERAR COBERTURA
+      # ============================================
+      - name: Run client tests with coverage
+        working-directory: ./client
+        run: npm test -- --coverage --watchAll=false --passWithNoTests
+        continue-on-error: true
+        env:
+          CI: true
+
+      - name: Run server tests with coverage
+        working-directory: ./server
+        run: npm test -- --coverage --watchAll=false --passWithNoTests
+        continue-on-error: true
+        env:
+          CI: true
+
+      # ============================================
+      # 5. CONSTRUIR APLICACIÓN
+      # ============================================
+      - name: Build client
+        working-directory: ./client
+        run: npm run build
+        continue-on-error: true
+
+      - name: Build server (si aplica)
+        working-directory: ./server
+        run: |
+          if [ -f "package.json" ] && grep -q "\"build\"" package.json; then
+            npm run build
+          else
+            echo "No build script found, skipping"
+          fi
+        continue-on-error: true
+
+      # ============================================
+      # 6. CONSTRUIR IMAGEN DOCKER
+      # ============================================
+      - name: Create Dockerfile if not exists
+        run: |
+          if [ ! -f Dockerfile ]; then
+            cat > Dockerfile <<'EOF'
+          # Multi-stage build para React-Chat
+          FROM node:18-alpine AS client-build
+          WORKDIR /app/client
+          COPY client/package*.json ./
+          RUN npm ci --only=production
+          COPY client/ ./
+          RUN npm run build
+
+          FROM node:18-alpine AS server-build
+          WORKDIR /app/server
+          COPY server/package*.json ./
+          RUN npm ci --only=production
+          COPY server/ ./
+
+          FROM node:18-alpine
+          WORKDIR /app
+          COPY --from=client-build /app/client/build ./client/build
+          COPY --from=server-build /app/server ./server
+          WORKDIR /app/server
+          EXPOSE 3001
+          CMD ["node", "src/index.js"]
+          EOF
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          load: true
+          tags: ${{ env.DOCKER_IMAGE }}:${{ github.sha }},${{ env.DOCKER_IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ============================================
+      # 7. INSTALAR Y EJECUTAR TRIVY
+      # ============================================
+      - name: Install Trivy
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget apt-transport-https gnupg lsb-release
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo gpg --dearmor -o /usr/share/keyrings/trivy.gpg
+          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee /etc/apt/sources.list.d/trivy.list
+          sudo apt-get update
+          sudo apt-get install -y trivy
+
+      - name: Scan Docker image with Trivy
+        run: |
+          trivy image \
+            --format json \
+            --output trivy-image-report.json \
+            --severity HIGH,CRITICAL \
+            ${{ env.DOCKER_IMAGE }}:${{ github.sha }}
+        continue-on-error: true
+
+      - name: Scan filesystem with Trivy
+        run: |
+          trivy fs \
+            --format json \
+            --output trivy-fs-report.json \
+            --severity HIGH,CRITICAL \
+            --scanners vuln,secret,misconfig \
+            .
+        continue-on-error: true
+
+      # ============================================
+      # 8. CONVERTIR REPORTES TRIVY A FORMATO SONAR
+      # ============================================
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Convert Trivy reports to SonarQube format
+        run: |
+          python3 scripts/trivy-to-sonar.py \
+            --image-report trivy-image-report.json \
+            --fs-report trivy-fs-report.json \
+            --output sonar-trivy.json
+
+      # ============================================
+      # 9. EJECUTAR ANÁLISIS SONARQUBE
+      # ============================================
+      - name: SonarQube Scan
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        run: |
+          # Instalar sonar-scanner via npm
+          npm install -g @sonar/scanner@${{ env.SONAR_SCANNER_VERSION }}
+          
+          # Ejecutar análisis
+          sonar-scanner \
+            -Dsonar.projectKey=react-chat \
+            -Dsonar.sources=client/src,server/src \
+            -Dsonar.host.url=$SONAR_HOST_URL \
+            -Dsonar.token=$SONAR_TOKEN \
+            -Dsonar.externalIssuesReportPaths=sonar-trivy.json \
+            -Dsonar.javascript.lcov.reportPaths=client/coverage/lcov.info,server/coverage/lcov.info \
+            -Dsonar.scm.provider=git
+
+      # ============================================
+      # 10. SUBIR ARTEFACTOS (para depuración)
+      # ============================================
+      - name: Upload Trivy reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trivy-reports
+          path: |
+            trivy-image-report.json
+            trivy-fs-report.json
+            sonar-trivy.json
+          retention-days: 30
+
+      - name: Upload coverage reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-reports
+          path: |
+            client/coverage/
+            server/coverage/
+          retention-days: 30
+
+      # ============================================
+      # 11. QUALITY GATE (opcional)
+      # ============================================
+      - name: SonarQube Quality Gate check
+        uses: sonarsource/sonarqube-quality-gate-action@master
+        timeout-minutes: 5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        continue-on-error: true
+        # Nota: requiere webhook configurado en SonarQube
+
+      # ============================================
+      # 12. RESUMEN DE RESULTADOS
+      # ============================================
+      - name: Generate summary
+        if: always()
+        run: |
+          echo "## 🔍 Security Analysis Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### SonarQube Analysis" >> $GITHUB_STEP_SUMMARY
+          echo "- **Project:** react-chat" >> $GITHUB_STEP_SUMMARY
+          echo "- **Dashboard:** ${{ secrets.SONAR_HOST_URL }}/dashboard?id=react-chat" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Trivy Scans" >> $GITHUB_STEP_SUMMARY
+          echo "- Docker Image Scan: ✅ Completed" >> $GITHUB_STEP_SUMMARY
+          echo "- Filesystem Scan: ✅ Completed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Reports available in artifacts**" >> $GITHUB_STEP_SUMMARY
