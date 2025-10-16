@@ -33,6 +33,15 @@ jobs:
         with:
           fetch-depth: 0  # Importante para SonarQube (análisis de blame)
 
+      - name: Debug project structure
+        run: |
+          echo "=== Project Structure ==="
+          find . -type f -name "package.json" -o -name "*.js" | head -20
+          echo "=== Client directory ==="
+          ls -la front-SecureChat/ || echo "front-SecureChat not found"
+          echo "=== Server structure ==="
+          ls -la src/ || echo "src not found"
+
       # ============================================
       # 2. CONFIGURAR NODE.JS
       # ============================================
@@ -79,6 +88,15 @@ jobs:
         run: npm run build
         continue-on-error: true
 
+      - name: Verify client build
+        working-directory: ./front-SecureChat
+        run: |
+          echo "=== Client structure ==="
+          ls -la
+          echo "=== Build output ==="
+          npm run build
+          ls -la build/ || echo "Build directory not created"
+
       - name: Build server (si aplica)
         run: |
           if [ -f "package.json" ] && grep -q "\"build\"" package.json; then
@@ -97,9 +115,9 @@ jobs:
             cat > Dockerfile <<'EOF'
           # Multi-stage build para React-Chat
           FROM node:18-alpine AS client-build
-          WORKDIR /app/front-SecureChat
+          WORKDIR /app
           COPY front-SecureChat/package*.json ./
-          RUN npm ci --only=production
+          RUN npm ci
           COPY front-SecureChat/ ./
           RUN npm run build
 
@@ -111,12 +129,14 @@ jobs:
 
           FROM node:18-alpine
           WORKDIR /app
-          COPY --from=client-build /app/front-SecureChat/build ./front-SecureChat/build
+          COPY --from=client-build /app/build ./front-SecureChat/build
           COPY --from=server-build /app ./
           EXPOSE 3001
           CMD ["node", "src/index.js"]
           EOF
-          fi
+            else
+              echo "Dockerfile already exists, skipping creation"
+            fi
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
