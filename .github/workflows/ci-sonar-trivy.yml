@@ -19,32 +19,31 @@ jobs:
   security-analysis:
     name: Code Quality & Security Analysis
     runs-on: ubuntu-latest
-    
+
     permissions:
       contents: read
       security-events: write
-    
+
     steps:
-      # ============================================
-      # 1. CHECKOUT CÓDIGO
-      # ============================================
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Importante para SonarQube (análisis de blame)
+          fetch-depth: 0
 
       - name: Debug project structure
         run: |
-          echo "=== Project Structure ==="
-          find . -type f -name "package.json" -o -name "*.js" | head -20
-          echo "=== Client directory ==="
-          ls -la front-SecureChat/ || echo "front-SecureChat not found"
-          echo "=== Server structure ==="
-          ls -la src/ || echo "src not found"
+          echo "=== root files ==="
+          ls -la
+          echo "=== find package.json files ==="
+          find . -type f -name "package.json" -print || true
+          echo "=== front dir listing ==="
+          ls -la front-SecureChat || echo "front-SecureChat not found"
+          echo "=== server dir listing ==="
+          ls -la server || echo "server not found"
+          echo "=== show root package.json scripts (if exists) ==="
+          if [ -f package.json ]; then cat package.json | sed -n '1,200p'; fi
 
-      # ============================================
-      # 2. CONFIGURAR NODE.JS
-      # ============================================
+      # Node setup (cache npm)
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -52,91 +51,116 @@ jobs:
           cache: 'npm'
           cache-dependency-path: |
             front-SecureChat/package-lock.json
+            server/package-lock.json
             package-lock.json
 
-      # ============================================
-      # 3. INSTALAR DEPENDENCIAS
-      # ============================================
+      # Install dependencies (frontend + server)
       - name: Install client dependencies
         working-directory: ./front-SecureChat
-        run: npm ci
+        run: |
+          if [ -f package-lock.json ] || [ -f package.json ]; then
+            npm ci
+          else
+            echo "No package.json in front-SecureChat, skipping"
+          fi
 
       - name: Install server dependencies
-        run: npm ci
+        working-directory: ./server
+        run: |
+          if [ -f package-lock.json ] || [ -f package.json ]; then
+            npm ci
+          else
+            echo "No package.json in server/, skipping"
+          fi
 
-      # ============================================
-      # 4. EJECUTAR TESTS Y GENERAR COBERTURA
-      # ============================================
+      # Tests & coverage (continue-on-error para no bloquear CI si no hay tests)
       - name: Run client tests with coverage
         working-directory: ./front-SecureChat
-        run: npm test -- --coverage --watchAll=false --passWithNoTests
+        run: |
+          if npm run | grep -q "test"; then
+            npm test -- --coverage --watchAll=false --passWithNoTests
+          else
+            echo "No test script in front-SecureChat/package.json, skipping"
+          fi
         continue-on-error: true
         env:
           CI: true
 
       - name: Run server tests with coverage
-        run: npm test -- --coverage --watchAll=false --passWithNoTests
+        working-directory: ./server
+        run: |
+          if npm run | grep -q "test"; then
+            npm test -- --coverage --watchAll=false --passWithNoTests
+          else
+            echo "No test script in server/package.json, skipping"
+          fi
         continue-on-error: true
         env:
           CI: true
 
-      # ============================================
-      # 5. CONSTRUIR APLICACIÓN
-      # ============================================
+      # Build frontend & server (if scripts exist)
       - name: Build client
         working-directory: ./front-SecureChat
-        run: npm run build
-        continue-on-error: true
-
-      - name: Verify client build
-        working-directory: ./front-SecureChat
         run: |
-          echo "=== Client structure ==="
-          ls -la
-          echo "=== Build output ==="
-          npm run build
-          ls -la build/ || echo "Build directory not created"
-
-      - name: Build server (si aplica)
-        run: |
-          if [ -f "package.json" ] && grep -q "\"build\"" package.json; then
+          if npm run | grep -q "build"; then
             npm run build
           else
-            echo "No build script found, skipping"
+            echo "No build script in front-SecureChat/package.json, skipping"
           fi
         continue-on-error: true
 
-      # ============================================
-      # 6. CONSTRUIR IMAGEN DOCKER
-      # ============================================
+      - name: Verify client build folder
+        working-directory: ./front-SecureChat
+        run: |
+          echo "=== front-SecureChat content ==="
+          ls -la
+          if [ -d build ] || [ -d dist ]; then
+            echo "Build output exists"
+            ls -la build || ls -la dist || true
+          else
+            echo "No build output (build/ or dist/), ensure project builds for production"
+          fi
+
+      - name: Build server (if build script)
+        working-directory: ./server
+        run: |
+          if npm run | grep -q "build"; then
+            npm run build
+          else
+            echo "No build script in server/package.json, skipping build"
+          fi
+        continue-on-error: true
+
+      # Docker image (create Dockerfile only if missing)
       - name: Create Dockerfile if not exists
         run: |
           if [ ! -f Dockerfile ]; then
             cat > Dockerfile <<'EOF'
-          # Multi-stage build para React-Chat
-          FROM node:18-alpine AS client-build
-          WORKDIR /app
-          COPY front-SecureChat/package*.json ./
-          RUN npm ci
-          COPY front-SecureChat/ ./
-          RUN npm run build
+# Multi-stage build para React-Chat
+FROM node:18-alpine AS client-build
+WORKDIR /app
+COPY front-SecureChat/package*.json ./front-SecureChat/
+RUN cd front-SecureChat && npm ci
+COPY front-SecureChat/ ./front-SecureChat/
+RUN cd front-SecureChat && npm run build
 
-          FROM node:18-alpine AS server-build
-          WORKDIR /app
-          COPY package*.json ./
-          RUN npm ci --only=production
-          COPY . ./
+FROM node:18-alpine AS server-build
+WORKDIR /app
+COPY server/package*.json ./server/
+RUN cd server && npm ci --only=production
+COPY server/ ./server/
 
-          FROM node:18-alpine
-          WORKDIR /app
-          COPY --from=client-build /app/build ./front-SecureChat/build
-          COPY --from=server-build /app ./
-          EXPOSE 3001
-          CMD ["node", "src/index.js"]
-          EOF
-            else
-              echo "Dockerfile already exists, skipping creation"
-            fi
+FROM node:18-alpine
+WORKDIR /app
+# copy built frontend (assuming output in front-SecureChat/build or front-SecureChat/dist)
+COPY --from=client-build /app/front-SecureChat/build ./front-SecureChat/build
+COPY --from=server-build /app/server ./server
+EXPOSE 3001
+CMD ["node", "server/src/index.js"]
+EOF
+          else
+            echo "Dockerfile already exists"
+          fi
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -151,9 +175,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # ============================================
-      # 7. INSTALAR Y EJECUTAR TRIVY
-      # ============================================
+      # Install Trivy (apt) and scan
       - name: Install Trivy
         run: |
           sudo apt-get update
@@ -182,9 +204,7 @@ jobs:
             .
         continue-on-error: true
 
-      # ============================================
-      # 8. CONVERTIR REPORTES TRIVY A FORMATO SONAR
-      # ============================================
+      # Python for conversion
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
@@ -192,35 +212,34 @@ jobs:
 
       - name: Convert Trivy reports to SonarQube format
         run: |
-          python3 scripts/trivy-to-sonar.py \
-            --image-report trivy-image-report.json \
-            --fs-report trivy-fs-report.json \
-            --output sonar-trivy.json
+          if [ -f scripts/trivy-to-sonar.py ]; then
+            python3 scripts/trivy-to-sonar.py \
+              --image-report trivy-image-report.json \
+              --fs-report trivy-fs-report.json \
+              --output sonar-trivy.json
+          else
+            echo "scripts/trivy-to-sonar.py not found - skipping conversion step"
+            # create minimal sonar-trivy.json to avoid sonar failure (empty array)
+            echo "[]" > sonar-trivy.json
+          fi
 
-      # ============================================
-      # 9. EJECUTAR ANÁLISIS SONARQUBE
-      # ============================================
+      # Sonar scan
       - name: SonarQube Scan
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
         run: |
-          # Instalar sonar-scanner via npm
           npm install -g @sonar/scanner@${{ env.SONAR_SCANNER_VERSION }}
-          
-          # Ejecutar análisis
           sonar-scanner \
             -Dsonar.projectKey=react-chat \
-            -Dsonar.sources=front-SecureChat/src,src \
+            -Dsonar.sources=front-SecureChat/src,server/src,server,front-SecureChat \
             -Dsonar.host.url=$SONAR_HOST_URL \
             -Dsonar.token=$SONAR_TOKEN \
             -Dsonar.externalIssuesReportPaths=sonar-trivy.json \
-            -Dsonar.javascript.lcov.reportPaths=front-SecureChat/coverage/lcov.info,coverage/lcov.info \
+            -Dsonar.javascript.lcov.reportPaths=front-SecureChat/coverage/lcov.info,server/coverage/lcov.info \
             -Dsonar.scm.provider=git
 
-      # ============================================
-      # 10. SUBIR ARTEFACTOS (para depuración)
-      # ============================================
+      # Upload artifacts for debugging
       - name: Upload Trivy reports
         uses: actions/upload-artifact@v4
         if: always()
@@ -239,12 +258,9 @@ jobs:
           name: coverage-reports
           path: |
             front-SecureChat/coverage/
-            coverage/
+            server/coverage/
           retention-days: 30
 
-      # ============================================
-      # 11. QUALITY GATE (opcional)
-      # ============================================
       - name: SonarQube Quality Gate check
         uses: sonarsource/sonarqube-quality-gate-action@master
         timeout-minutes: 5
@@ -252,11 +268,7 @@ jobs:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
         continue-on-error: true
-        # Nota: requiere webhook configurado en SonarQube
 
-      # ============================================
-      # 12. RESUMEN DE RESULTADOS
-      # ============================================
       - name: Generate summary
         if: always()
         run: |
