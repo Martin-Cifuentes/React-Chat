@@ -31,6 +31,7 @@ jobs:
           fetch-depth: 0
 
       - name: Debug project structure
+        shell: bash
         run: |
           echo "=== root files ==="
           ls -la
@@ -43,7 +44,6 @@ jobs:
           echo "=== show root package.json scripts (if exists) ==="
           if [ -f package.json ]; then cat package.json | sed -n '1,200p'; fi
 
-      # Node setup (cache npm)
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -53,9 +53,9 @@ jobs:
             front-SecureChat/package-lock.json
             package-lock.json
 
-      # Install dependencies (frontend + server)
       - name: Install client dependencies
         working-directory: ./front-SecureChat
+        shell: bash
         run: |
           if [ -f package-lock.json ] || [ -f package.json ]; then
             npm ci
@@ -65,6 +65,7 @@ jobs:
 
       - name: Install server dependencies
         working-directory: ./server
+        shell: bash
         run: |
           if [ -f package-lock.json ] || [ -f package.json ]; then
             npm ci
@@ -72,44 +73,46 @@ jobs:
             echo "No package.json in server/, skipping"
           fi
 
-      # Tests & coverage (continue-on-error para no bloquear CI si no hay tests)
       - name: Run client tests with coverage
         working-directory: ./front-SecureChat
+        shell: bash
+        continue-on-error: true
+        env:
+          CI: true
         run: |
           if npm run | grep -q "test"; then
             npm test -- --coverage --watchAll=false --passWithNoTests
           else
             echo "No test script in front-SecureChat/package.json, skipping"
           fi
-        continue-on-error: true
-        env:
-          CI: true
 
       - name: Run server tests with coverage
         working-directory: ./server
+        shell: bash
+        continue-on-error: true
+        env:
+          CI: true
         run: |
           if npm run | grep -q "test"; then
             npm test -- --coverage --watchAll=false --passWithNoTests
           else
             echo "No test script in server/package.json, skipping"
           fi
-        continue-on-error: true
-        env:
-          CI: true
 
-      # Build frontend & server (if scripts exist)
       - name: Build client
         working-directory: ./front-SecureChat
+        shell: bash
+        continue-on-error: true
         run: |
           if npm run | grep -q "build"; then
             npm run build
           else
             echo "No build script in front-SecureChat/package.json, skipping"
           fi
-        continue-on-error: true
 
       - name: Verify client build folder
         working-directory: ./front-SecureChat
+        shell: bash
         run: |
           echo "=== front-SecureChat content ==="
           ls -la
@@ -122,16 +125,17 @@ jobs:
 
       - name: Build server (if build script)
         working-directory: ./server
+        shell: bash
+        continue-on-error: true
         run: |
           if npm run | grep -q "build"; then
             npm run build
           else
             echo "No build script in server/package.json, skipping build"
           fi
-        continue-on-error: true
 
-      # Docker image (create Dockerfile only if missing)
       - name: Create Dockerfile if not exists
+        shell: bash
         run: |
           if [ ! -f Dockerfile ]; then
             cat > Dockerfile <<'EOF'
@@ -170,12 +174,14 @@ EOF
           context: .
           push: false
           load: true
-          tags: ${{ env.DOCKER_IMAGE }}:${{ github.sha }},${{ env.DOCKER_IMAGE }}:latest
+          tags: |
+            ${{ env.DOCKER_IMAGE }}:${{ github.sha }}
+            ${{ env.DOCKER_IMAGE }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # Install Trivy (apt) and scan
       - name: Install Trivy
+        shell: bash
         run: |
           sudo apt-get update
           sudo apt-get install -y wget apt-transport-https gnupg lsb-release
@@ -185,15 +191,18 @@ EOF
           sudo apt-get install -y trivy
 
       - name: Scan Docker image with Trivy
+        shell: bash
+        continue-on-error: true
         run: |
           trivy image \
             --format json \
             --output trivy-image-report.json \
             --severity HIGH,CRITICAL \
             ${{ env.DOCKER_IMAGE }}:${{ github.sha }}
-        continue-on-error: true
 
       - name: Scan filesystem with Trivy
+        shell: bash
+        continue-on-error: true
         run: |
           trivy fs \
             --format json \
@@ -201,15 +210,14 @@ EOF
             --severity HIGH,CRITICAL \
             --scanners vuln,secret,misconfig \
             .
-        continue-on-error: true
 
-      # Python for conversion
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Convert Trivy reports to SonarQube format
+        shell: bash
         run: |
           if [ -f scripts/trivy-to-sonar.py ]; then
             python3 scripts/trivy-to-sonar.py \
@@ -218,15 +226,14 @@ EOF
               --output sonar-trivy.json
           else
             echo "scripts/trivy-to-sonar.py not found - skipping conversion step"
-            # create minimal sonar-trivy.json to avoid sonar failure (empty array)
             echo "[]" > sonar-trivy.json
           fi
 
-      # Sonar scan
       - name: SonarQube Scan
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        shell: bash
         run: |
           npm install -g @sonar/scanner@${{ env.SONAR_SCANNER_VERSION }}
           sonar-scanner \
@@ -238,7 +245,6 @@ EOF
             -Dsonar.javascript.lcov.reportPaths=front-SecureChat/coverage/lcov.info,server/coverage/lcov.info \
             -Dsonar.scm.provider=git
 
-      # Upload artifacts for debugging
       - name: Upload Trivy reports
         uses: actions/upload-artifact@v4
         if: always()
@@ -270,15 +276,16 @@ EOF
 
       - name: Generate summary
         if: always()
+        shell: bash
         run: |
-          echo "## 🔍 Security Analysis Summary" >> $GITHUB_STEP_SUMMARY
+          echo "## Security Analysis Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### SonarQube Analysis" >> $GITHUB_STEP_SUMMARY
-          echo "- **Project:** react-chat" >> $GITHUB_STEP_SUMMARY
-          echo "- **Dashboard:** ${{ secrets.SONAR_HOST_URL }}/dashboard?id=react-chat" >> $GITHUB_STEP_SUMMARY
+          echo "- Project: react-chat" >> $GITHUB_STEP_SUMMARY
+          echo "- Dashboard: ${{ secrets.SONAR_HOST_URL }}/dashboard?id=react-chat" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Trivy Scans" >> $GITHUB_STEP_SUMMARY
-          echo "- Docker Image Scan: ✅ Completed" >> $GITHUB_STEP_SUMMARY
-          echo "- Filesystem Scan: ✅ Completed" >> $GITHUB_STEP_SUMMARY
+          echo "- Docker Image Scan: Completed" >> $GITHUB_STEP_SUMMARY
+          echo "- Filesystem Scan: Completed" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Reports available in artifacts**" >> $GITHUB_STEP_SUMMARY
+          echo "Reports available in artifacts" >> $GITHUB_STEP_SUMMARY
