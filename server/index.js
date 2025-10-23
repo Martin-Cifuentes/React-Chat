@@ -3,6 +3,7 @@ import http from 'http';//Para la creación del servidor HTTP
 import { Server as SocketServer } from "socket.io";// Para la comunicación en tiempo real
 import cors from 'cors';//Middleware para manejar la conecciónentre diferentes dispositivos
 import crypto from 'crypto';//Para encriptar los  mensajes
+import promClient from 'prom-client';
 
 //Creación de una instancia de express
 const app = express();
@@ -29,9 +30,48 @@ const dh = crypto.createECDH('prime256v1');
 dh.generateKeys();
 const serverPublicKey = dh.getPublicKey().toString('base64');
 
+// === Prometheus instrumentation ===
+const { Registry, collectDefaultMetrics, Counter, Histogram } = promClient;
+const register = new Registry();
+collectDefaultMetrics({ register, prefix: 'securechat_' });
+
+const connectionsCounter = new Counter({
+  name: 'securechat_connections_total',
+  help: 'Total socket connections',
+  registers: [register]
+});
+const keyExchangeCounter = new Counter({
+  name: 'securechat_key_exchanges_total',
+  help: 'Total Diffie-Hellman key exchanges',
+  registers: [register]
+});
+const messagesCounter = new Counter({
+  name: 'securechat_messages_total',
+  help: 'Total messages processed',
+  registers: [register]
+});
+const messageSizeHistogram = new Histogram({
+  name: 'securechat_message_size_bytes',
+  help: 'Histogram of encrypted message sizes (bytes)',
+  buckets: [64, 256, 1024, 4096, 16384],
+  registers: [register]
+});
+// === end instrumentation ===
+
+// Exponer endpoint /metrics
+app.get('/metrics', async (req, res) => {
+  try {
+    res.setHeader('Content-Type', register.contentType);
+    res.end(await register.metrics());
+  } catch (ex) {
+    res.status(500).end(ex.message);
+  }
+});
+
 //Se maneja el evento de conexión de un nuevo cliente
 io.on('connection', (socket) => {
   console.log(socket.id);
+  connectionsCounter.inc();
 
   // Enviar la clave pública del servidor al cliente
   socket.emit('public-key', serverPublicKey);
@@ -41,11 +81,18 @@ io.on('connection', (socket) => {
     const clientPublicKey = Buffer.from(clientPublicKeyBase64, 'base64');
     const sharedSecret = dh.computeSecret(clientPublicKey).toString('base64');
     socket.sharedSecret = sharedSecret;
+    keyExchangeCounter.inc();
     console.log(`Shared secret with ${socket.id}: ${sharedSecret}`);
   });
 
   //se recibe y envía el mensaje encriptado, además se incluye el id del cliente que envió el mensaje
   socket.on('message', (encryptedMessage) => {
+    messagesCounter.inc();
+    const size = encryptedMessage && encryptedMessage.body
+      ? Buffer.byteLength(encryptedMessage.body, 'utf8')
+      : 0;
+    messageSizeHistogram.observe(size);
+
     console.log(encryptedMessage);
     socket.broadcast.emit('message', {
       body: encryptedMessage.body,

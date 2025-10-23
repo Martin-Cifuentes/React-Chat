@@ -42,8 +42,8 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
           cache-dependency-path: |
-            client/package-lock.json
-            server/package-lock.json
+            front-SecureChat/package-lock.json
+            package-lock.json
 
       # ============================================
       # 3. INSTALAR DEPENDENCIAS
