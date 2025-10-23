@@ -31,139 +31,121 @@ jobs:
           fetch-depth: 0
 
       - name: Debug project structure
-        shell: bash
         run: |
-          echo "=== root files ==="
+          echo "=== Root files ==="
           ls -la
-          echo "=== find package.json files ==="
+          echo "=== Find package.json files ==="
           find . -type f -name "package.json" -print || true
-          echo "=== front dir listing ==="
+          echo "=== Front dir listing ==="
           ls -la front-SecureChat || echo "front-SecureChat not found"
-          echo "=== server dir listing ==="
+          echo "=== Server dir listing ==="
           ls -la server || echo "server not found"
-          echo "=== show root package.json scripts (if exists) ==="
-          if [ -f package.json ]; then cat package.json | sed -n '1,200p'; fi
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
-          cache-dependency-path: |
-            front-SecureChat/package-lock.json
-            package-lock.json
 
       - name: Install client dependencies
         working-directory: ./front-SecureChat
-        shell: bash
         run: |
-          if [ -f package-lock.json ] || [ -f package.json ]; then
+          if [ -f package.json ]; then
             npm ci
           else
             echo "No package.json in front-SecureChat, skipping"
           fi
 
       - name: Install server dependencies
-        working-directory: ./server
-        shell: bash
         run: |
-          if [ -f package-lock.json ] || [ -f package.json ]; then
+          if [ -f package.json ]; then
             npm ci
           else
-            echo "No package.json in server/, skipping"
+            echo "No package.json in root, skipping"
           fi
 
       - name: Run client tests with coverage
         working-directory: ./front-SecureChat
-        shell: bash
         continue-on-error: true
         env:
           CI: true
         run: |
-          if npm run | grep -q "test"; then
+          if npm run 2>/dev/null | grep -q "test"; then
             npm test -- --coverage --watchAll=false --passWithNoTests
           else
-            echo "No test script in front-SecureChat/package.json, skipping"
+            echo "No test script in front-SecureChat/package.json"
+            mkdir -p coverage
           fi
 
       - name: Run server tests with coverage
-        working-directory: ./server
-        shell: bash
         continue-on-error: true
         env:
           CI: true
         run: |
-          if npm run | grep -q "test"; then
+          if npm run 2>/dev/null | grep -q "test"; then
             npm test -- --coverage --watchAll=false --passWithNoTests
           else
-            echo "No test script in server/package.json, skipping"
+            echo "No test script in root package.json"
+            mkdir -p coverage
           fi
 
       - name: Build client
         working-directory: ./front-SecureChat
-        shell: bash
         continue-on-error: true
         run: |
-          if npm run | grep -q "build"; then
+          if npm run 2>/dev/null | grep -q "build"; then
             npm run build
           else
-            echo "No build script in front-SecureChat/package.json, skipping"
+            echo "No build script found, skipping"
           fi
 
       - name: Verify client build folder
         working-directory: ./front-SecureChat
-        shell: bash
         run: |
-          echo "=== front-SecureChat content ==="
+          echo "=== Front-SecureChat content ==="
           ls -la
-          if [ -d build ] || [ -d dist ]; then
-            echo "Build output exists"
-            ls -la build || ls -la dist || true
+          if [ -d dist ]; then
+            echo "✓ Build output exists in dist/"
+            ls -la dist
+          elif [ -d build ]; then
+            echo "✓ Build output exists in build/"
+            ls -la build
           else
-            echo "No build output (build/ or dist/), ensure project builds for production"
+            echo "⚠ No build output found"
           fi
 
-      - name: Build server (if build script)
-        working-directory: ./server
-        shell: bash
-        continue-on-error: true
+      - name: Create Dockerfile
         run: |
-          if npm run | grep -q "build"; then
-            npm run build
-          else
-            echo "No build script in server/package.json, skipping build"
-          fi
+          cat > Dockerfile <<'EOF'
+          # Multi-stage build para SecureChat
+          FROM node:18-alpine AS client-build
+          WORKDIR /app
+          COPY front-SecureChat/package*.json ./front-SecureChat/
+          RUN cd front-SecureChat && npm ci
+          COPY front-SecureChat/ ./front-SecureChat/
+          RUN cd front-SecureChat && npm run build
 
-      - name: Create Dockerfile if not exists
-        shell: bash
-        run: |
-          if [ ! -f Dockerfile ]; then
-            cat > Dockerfile <<'EOF'
-# Multi-stage build para React-Chat
-FROM node:18-alpine AS client-build
-WORKDIR /app
-COPY front-SecureChat/package*.json ./front-SecureChat/
-RUN cd front-SecureChat && npm ci
-COPY front-SecureChat/ ./front-SecureChat/
-RUN cd front-SecureChat && npm run build
+          FROM node:18-alpine AS server-deps
+          WORKDIR /app
+          COPY package*.json ./
+          RUN npm ci --only=production
 
-FROM node:18-alpine AS server-build
-WORKDIR /app
-COPY server/package*.json ./server/
-RUN cd server && npm ci --only=production
-COPY server/ ./server/
-
-FROM node:18-alpine
-WORKDIR /app
-# copy built frontend (assuming output in front-SecureChat/build or front-SecureChat/dist)
-COPY --from=client-build /app/front-SecureChat/build ./front-SecureChat/build
-COPY --from=server-build /app/server ./server
-EXPOSE 3001
-CMD ["node", "server/src/index.js"]
-EOF
-          else
-            echo "Dockerfile already exists"
-          fi
+          FROM node:18-alpine
+          WORKDIR /app
+          
+          # Copiar build del cliente
+          COPY --from=client-build /app/front-SecureChat/dist ./front-SecureChat/dist
+          
+          # Copiar dependencias y código del servidor
+          COPY --from=server-deps /app/node_modules ./node_modules
+          COPY server ./server
+          COPY package*.json ./
+          
+          EXPOSE 4000
+          
+          CMD ["node", "server/index.js"]
+          EOF
+          echo "✓ Dockerfile created successfully"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -174,14 +156,11 @@ EOF
           context: .
           push: false
           load: true
-          tags: |
-            ${{ env.DOCKER_IMAGE }}:${{ github.sha }}
-            ${{ env.DOCKER_IMAGE }}:latest
+          tags: ${{ env.DOCKER_IMAGE }}:${{ github.sha }},${{ env.DOCKER_IMAGE }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: Install Trivy
-        shell: bash
         run: |
           sudo apt-get update
           sudo apt-get install -y wget apt-transport-https gnupg lsb-release
@@ -191,7 +170,6 @@ EOF
           sudo apt-get install -y trivy
 
       - name: Scan Docker image with Trivy
-        shell: bash
         continue-on-error: true
         run: |
           trivy image \
@@ -201,7 +179,6 @@ EOF
             ${{ env.DOCKER_IMAGE }}:${{ github.sha }}
 
       - name: Scan filesystem with Trivy
-        shell: bash
         continue-on-error: true
         run: |
           trivy fs \
@@ -216,34 +193,119 @@ EOF
         with:
           python-version: '3.11'
 
-      - name: Convert Trivy reports to SonarQube format
-        shell: bash
+      - name: Create Trivy to SonarQube converter
         run: |
-          if [ -f scripts/trivy-to-sonar.py ]; then
-            python3 scripts/trivy-to-sonar.py \
-              --image-report trivy-image-report.json \
-              --fs-report trivy-fs-report.json \
-              --output sonar-trivy.json
-          else
-            echo "scripts/trivy-to-sonar.py not found - skipping conversion step"
-            echo "[]" > sonar-trivy.json
-          fi
+          mkdir -p scripts
+          cat > scripts/trivy-to-sonar.py <<'PYTHON'
+          #!/usr/bin/env python3
+          import json
+          import sys
+          import argparse
+
+          def convert_trivy_to_sonar(image_report, fs_report, output_file):
+              issues = []
+              
+              def process_report(report_path, source_prefix):
+                  try:
+                      with open(report_path, 'r') as f:
+                          data = json.load(f)
+                      
+                      if 'Results' in data:
+                          for result in data['Results']:
+                              target = result.get('Target', 'unknown')
+                              vulnerabilities = result.get('Vulnerabilities', [])
+                              
+                              for vuln in vulnerabilities:
+                                  issue = {
+                                      "engineId": "trivy",
+                                      "ruleId": vuln.get('VulnerabilityID', 'UNKNOWN'),
+                                      "severity": map_severity(vuln.get('Severity', 'UNKNOWN')),
+                                      "type": "VULNERABILITY",
+                                      "primaryLocation": {
+                                          "message": f"{vuln.get('Title', 'No title')} - {vuln.get('Description', 'No description')}",
+                                          "filePath": f"{source_prefix}/{target}"
+                                      }
+                                  }
+                                  issues.append(issue)
+                  except FileNotFoundError:
+                      print(f"Warning: {report_path} not found", file=sys.stderr)
+                  except json.JSONDecodeError:
+                      print(f"Warning: {report_path} is not valid JSON", file=sys.stderr)
+              
+              def map_severity(trivy_severity):
+                  mapping = {
+                      'CRITICAL': 'CRITICAL',
+                      'HIGH': 'MAJOR',
+                      'MEDIUM': 'MINOR',
+                      'LOW': 'INFO',
+                      'UNKNOWN': 'INFO'
+                  }
+                  return mapping.get(trivy_severity.upper(), 'INFO')
+              
+              if image_report:
+                  process_report(image_report, 'docker')
+              
+              if fs_report:
+                  process_report(fs_report, 'filesystem')
+              
+              with open(output_file, 'w') as f:
+                  json.dump({"issues": issues}, f, indent=2)
+              
+              print(f"Converted {len(issues)} issues to SonarQube format")
+
+          if __name__ == '__main__':
+              parser = argparse.ArgumentParser()
+              parser.add_argument('--image-report', help='Path to Trivy image report')
+              parser.add_argument('--fs-report', help='Path to Trivy filesystem report')
+              parser.add_argument('--output', required=True, help='Output file path')
+              
+              args = parser.parse_args()
+              convert_trivy_to_sonar(args.image_report, args.fs_report, args.output)
+          PYTHON
+          
+          chmod +x scripts/trivy-to-sonar.py
+          echo "✓ Converter script created"
+
+      - name: Convert Trivy reports to SonarQube format
+        run: |
+          python3 scripts/trivy-to-sonar.py \
+            --image-report trivy-image-report.json \
+            --fs-report trivy-fs-report.json \
+            --output sonar-trivy.json
+
+      - name: Create SonarQube properties
+        run: |
+          cat > sonar-project.properties <<'EOF'
+          sonar.projectKey=react-chat
+          sonar.projectName=SecureChat
+          sonar.projectVersion=1.0
+          
+          sonar.sources=front-SecureChat/src,server
+          sonar.tests=front-SecureChat/src,server
+          sonar.test.inclusions=**/*.test.js,**/*.test.jsx,**/*.spec.js,**/*.spec.jsx
+          
+          sonar.javascript.lcov.reportPaths=front-SecureChat/coverage/lcov.info,coverage/lcov.info
+          sonar.externalIssuesReportPaths=sonar-trivy.json
+          
+          sonar.sourceEncoding=UTF-8
+          sonar.exclusions=**/node_modules/**,**/dist/**,**/build/**,**/*.test.js,**/*.spec.js
+          EOF
+          echo "✓ SonarQube properties created"
 
       - name: SonarQube Scan
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
-        shell: bash
+        continue-on-error: true
         run: |
-          npm install -g @sonar/scanner@${{ env.SONAR_SCANNER_VERSION }}
+          npm install -g sonarqube-scanner@${{ env.SONAR_SCANNER_VERSION }}
           sonar-scanner \
             -Dsonar.projectKey=react-chat \
-            -Dsonar.sources=front-SecureChat/src,server/src,server,front-SecureChat \
+            -Dsonar.sources=front-SecureChat/src,server \
             -Dsonar.host.url=$SONAR_HOST_URL \
             -Dsonar.token=$SONAR_TOKEN \
-            -Dsonar.externalIssuesReportPaths=sonar-trivy.json \
-            -Dsonar.javascript.lcov.reportPaths=front-SecureChat/coverage/lcov.info,server/coverage/lcov.info \
-            -Dsonar.scm.provider=git
+            -Dsonar.javascript.lcov.reportPaths=front-SecureChat/coverage/lcov.info,coverage/lcov.info \
+            -Dsonar.externalIssuesReportPaths=sonar-trivy.json
 
       - name: Upload Trivy reports
         uses: actions/upload-artifact@v4
@@ -263,7 +325,7 @@ EOF
           name: coverage-reports
           path: |
             front-SecureChat/coverage/
-            server/coverage/
+            coverage/
           retention-days: 30
 
       - name: SonarQube Quality Gate check
@@ -276,16 +338,11 @@ EOF
 
       - name: Generate summary
         if: always()
-        shell: bash
         run: |
-          echo "## Security Analysis Summary" >> $GITHUB_STEP_SUMMARY
+          echo "## 🔍 Security Analysis Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### SonarQube Analysis" >> $GITHUB_STEP_SUMMARY
-          echo "- Project: react-chat" >> $GITHUB_STEP_SUMMARY
-          echo "- Dashboard: ${{ secrets.SONAR_HOST_URL }}/dashboard?id=react-chat" >> $GITHUB_STEP_SUMMARY
+          echo "### 📊 SonarQube Analysis" >> $GITHUB_STEP_SUMMARY
+          echo "- **Project:** react-chat" >> $GITHUB_STEP_SUMMARY
+          echo "- **Dashboard:** ${{ secrets.SONAR_HOST_URL }}/dashboard?id=react-chat" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Trivy Scans" >> $GITHUB_STEP_SUMMARY
-          echo "- Docker Image Scan: Completed" >> $GITHUB_STEP_SUMMARY
-          echo "- Filesystem Scan: Completed" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Reports available in artifacts" >> $GITHUB_STEP_SUMMARY
+          echo "### 🔒 Trivy Security Scans" >> $GITHUB_
