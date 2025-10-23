@@ -1,0 +1,8 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'react-chat'
+    static_configs:
+      - targets: ['{{ prom_target_host | default("localhost:4000") }}']

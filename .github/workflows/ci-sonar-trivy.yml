@@ -1,0 +1,340 @@
+name: CI - SonarQube & Trivy Security Scan
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+    branches:
+      - main
+      - develop
+
+env:
+  NODE_VERSION: '18.x'
+  DOCKER_IMAGE: react-chat
+  SONAR_SCANNER_VERSION: '5.0.1'
+
+jobs:
+  security-analysis:
+    name: Code Quality & Security Analysis
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Debug project structure
+        run: |
+          echo "=== Root files ==="
+          ls -la
+          echo "=== Find package.json files ==="
+          find . -type f -name "package.json" -print || true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install client dependencies
+        working-directory: ./front-SecureChat
+        run: npm ci
+
+      - name: Install server dependencies
+        run: npm ci
+
+      - name: Create coverage directories
+        run: |
+          mkdir -p front-SecureChat/coverage
+          mkdir -p coverage
+
+      - name: Run client tests with coverage
+        working-directory: ./front-SecureChat
+        continue-on-error: true
+        env:
+          CI: true
+        run: |
+          if npm run 2>/dev/null | grep -q "test"; then
+            npm test -- --coverage --watchAll=false --passWithNoTests || echo "Tests failed or not found"
+          else
+            echo "No test script available - creating empty coverage"
+            echo '{}' > coverage/coverage-final.json
+          fi
+
+      - name: Run server tests with coverage
+        continue-on-error: true
+        env:
+          CI: true
+        run: |
+          if npm run 2>/dev/null | grep -q "test"; then
+            npm test -- --coverage --watchAll=false --passWithNoTests || echo "Tests failed or not found"
+          else
+            echo "No test script available - creating empty coverage"
+            echo '{}' > coverage/coverage-final.json
+          fi
+
+      - name: Build client
+        working-directory: ./front-SecureChat
+        run: npm run build
+
+      - name: Verify client build folder
+        working-directory: ./front-SecureChat
+        run: |
+          echo "Build output:"
+          ls -la dist 2>/dev/null || ls -la build 2>/dev/null || echo "No build folder found"
+
+      - name: Create Dockerfile
+        run: |
+          cat > Dockerfile <<'EOF'
+          FROM node:18-alpine AS client-build
+          WORKDIR /app
+          COPY front-SecureChat/package*.json ./front-SecureChat/
+          RUN cd front-SecureChat && npm ci
+          COPY front-SecureChat/ ./front-SecureChat/
+          RUN cd front-SecureChat && npm run build
+
+          FROM node:18-alpine AS server-deps
+          WORKDIR /app
+          COPY package*.json ./
+          RUN npm ci --only=production
+
+          FROM node:18-alpine
+          WORKDIR /app
+          COPY --from=client-build /app/front-SecureChat/dist ./front-SecureChat/dist
+          COPY --from=server-deps /app/node_modules ./node_modules
+          COPY server ./server
+          COPY package*.json ./
+          EXPOSE 4000
+          CMD ["node", "server/index.js"]
+          EOF
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          load: true
+          tags: ${{ env.DOCKER_IMAGE }}:${{ github.sha }},${{ env.DOCKER_IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Install Trivy
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y wget apt-transport-https gnupg lsb-release
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo gpg --dearmor -o /usr/share/keyrings/trivy.gpg
+          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee /etc/apt/sources.list.d/trivy.list
+          sudo apt-get update -qq
+          sudo apt-get install -y trivy
+
+      - name: Scan Docker image with Trivy
+        continue-on-error: true
+        run: |
+          trivy image \
+            --format json \
+            --output trivy-image-report.json \
+            --severity HIGH,CRITICAL \
+            ${{ env.DOCKER_IMAGE }}:${{ github.sha }}
+
+      - name: Scan filesystem with Trivy
+        continue-on-error: true
+        run: |
+          trivy fs \
+            --format json \
+            --output trivy-fs-report.json \
+            --severity HIGH,CRITICAL \
+            --scanners vuln,secret,misconfig \
+            .
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Create Trivy to SonarQube converter
+        run: |
+          mkdir -p scripts
+          cat > scripts/trivy-to-sonar.py <<'PYTHON'
+          #!/usr/bin/env python3
+          import json
+          import sys
+          import argparse
+
+          def convert_trivy_to_sonar(image_report, fs_report, output_file):
+              issues = []
+              
+              def process_report(report_path, source_prefix):
+                  try:
+                      with open(report_path, 'r') as f:
+                          data = json.load(f)
+                      
+                      if 'Results' in data:
+                          for result in data['Results']:
+                              target = result.get('Target', 'unknown')
+                              vulnerabilities = result.get('Vulnerabilities', [])
+                              
+                              for vuln in vulnerabilities:
+                                  issue = {
+                                      "engineId": "trivy",
+                                      "ruleId": vuln.get('VulnerabilityID', 'UNKNOWN'),
+                                      "severity": map_severity(vuln.get('Severity', 'UNKNOWN')),
+                                      "type": "VULNERABILITY",
+                                      "primaryLocation": {
+                                          "message": f"{vuln.get('Title', 'No title')} - {vuln.get('Description', 'No description')}",
+                                          "filePath": f"{source_prefix}/{target}"
+                                      }
+                                  }
+                                  issues.append(issue)
+                  except FileNotFoundError:
+                      print(f"Warning: {report_path} not found", file=sys.stderr)
+                  except json.JSONDecodeError:
+                      print(f"Warning: {report_path} is not valid JSON", file=sys.stderr)
+              
+              def map_severity(trivy_severity):
+                  mapping = {
+                      'CRITICAL': 'CRITICAL',
+                      'HIGH': 'MAJOR',
+                      'MEDIUM': 'MINOR',
+                      'LOW': 'INFO',
+                      'UNKNOWN': 'INFO'
+                  }
+                  return mapping.get(trivy_severity.upper(), 'INFO')
+              
+              if image_report:
+                  process_report(image_report, 'docker')
+              
+              if fs_report:
+                  process_report(fs_report, 'filesystem')
+              
+              with open(output_file, 'w') as f:
+                  json.dump({"issues": issues}, f, indent=2)
+              
+              print(f"Converted {len(issues)} issues to SonarQube format")
+
+          if __name__ == '__main__':
+              parser = argparse.ArgumentParser()
+              parser.add_argument('--image-report', help='Path to Trivy image report')
+              parser.add_argument('--fs-report', help='Path to Trivy filesystem report')
+              parser.add_argument('--output', required=True, help='Output file path')
+              
+              args = parser.parse_args()
+              convert_trivy_to_sonar(args.image_report, args.fs_report, args.output)
+          PYTHON
+          
+          chmod +x scripts/trivy-to-sonar.py
+
+      - name: Convert Trivy reports to SonarQube format
+        run: |
+          python3 scripts/trivy-to-sonar.py \
+            --image-report trivy-image-report.json \
+            --fs-report trivy-fs-report.json \
+            --output sonar-trivy.json
+
+      - name: SonarQube Scan
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        continue-on-error: true
+        run: |
+          if [ -z "$SONAR_TOKEN" ] || [ -z "$SONAR_HOST_URL" ]; then
+            echo "Skipping SonarQube scan - SONAR_TOKEN or SONAR_HOST_URL not set"
+            exit 0
+          fi
+          
+          npm install -g sonarqube-scanner@${SONAR_SCANNER_VERSION}
+          
+          sonar-scanner \
+            -Dsonar.projectKey=react-chat \
+            -Dsonar.sources=front-SecureChat/src,server \
+            -Dsonar.host.url=${SONAR_HOST_URL} \
+            -Dsonar.login=${SONAR_TOKEN} \
+            -Dsonar.externalIssuesReportPaths=sonar-trivy.json \
+            -Dsonar.sourceEncoding=UTF-8 \
+            -Dsonar.exclusions=**/node_modules/**,**/dist/**,**/build/**
+
+      - name: Wait for SonarQube processing
+        if: success()
+        run: sleep 10
+
+      - name: Upload Trivy reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trivy-reports
+          path: |
+            trivy-image-report.json
+            trivy-fs-report.json
+            sonar-trivy.json
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Upload coverage reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-reports
+          path: |
+            front-SecureChat/coverage/
+            coverage/
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: SonarQube Quality Gate check
+        uses: sonarsource/sonarqube-quality-gate-action@master
+        timeout-minutes: 5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        continue-on-error: true
+        if: env.SONAR_TOKEN != ''
+
+      - name: Generate summary
+        if: always()
+        shell: bash
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY << 'SUMMARY_EOF'
+          ## 🔍 Security Analysis Summary
+          
+          ### 📊 SonarQube Analysis
+          - **Project:** react-chat
+          
+          ### 🔒 Trivy Security Scans
+          SUMMARY_EOF
+          
+          if [ -f trivy-image-report.json ]; then
+            IMAGE_VULNS=$(python3 -c "
+          import json
+          try:
+              with open('trivy-image-report.json') as f:
+                  data = json.load(f)
+                  print(sum(len(r.get('Vulnerabilities', [])) for r in data.get('Results', [])))
+          except:
+              print(0)
+          " 2>/dev/null || echo "0")
+            echo "- 🐳 **Docker Image Scan:** ${IMAGE_VULNS} vulnerabilities found" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [ -f trivy-fs-report.json ]; then
+            FS_VULNS=$(python3 -c "
+          import json
+          try:
+              with open('trivy-fs-report.json') as f:
+                  data = json.load(f)
+                  print(sum(len(r.get('Vulnerabilities', [])) for r in data.get('Results', [])))
+          except:
+              print(0)
+          " 2>/dev/null || echo "0")
+            echo "- 📁 **Filesystem Scan:** ${FS_VULNS} vulnerabilities found" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**📦 Reports available in artifacts**" >> $GITHUB_STEP_SUMMARY

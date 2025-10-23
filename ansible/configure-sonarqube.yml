@@ -1,0 +1,290 @@
+---
+# Ansible Playbook para configurar SonarQube en VM existente
+# Requisitos: VM Ubuntu 22.04 LTS, acceso SSH con usuario sudo
+# Uso: ansible-playbook -i inventory.ini configure-sonarqube.yml --ask-vault-pass
+
+- name: Configurar SonarQube en VM Azure
+  hosts: sonarqube_server
+  become: yes
+  vars:
+    # Versión SonarQube - usando 10.7 LTS por estabilidad y soporte extendido
+    sonarqube_version: "10.7.0.96327"
+    sonarqube_download_url: "https://binaries.sonarsource.com/Distribution/sonarqube/sonarqube-{{ sonarqube_version }}.zip"
+    
+    # PostgreSQL configuración
+    postgres_version: "15"
+    sonar_db_name: "sonar"
+    sonar_db_user: "sonar"
+    # IMPORTANTE: Cambiar en producción y guardar en ansible-vault
+    sonar_db_password: "{{ vault_sonar_db_password | default('S0n4rP@ssw0rd!2025') }}"
+    
+    # Directorios
+    sonar_install_dir: "/opt/sonarqube"
+    sonar_data_dir: "/var/sonarqube"
+    
+    # Sistema
+    sonar_user: "sonarqube"
+    sonar_group: "sonarqube"
+    
+    # Java
+    java_version: "17"
+    
+  tasks:
+    # ============================================
+    # 1. PREPARACIÓN DEL SISTEMA
+    # ============================================
+    - name: Actualizar cache de paquetes
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Instalar dependencias del sistema
+      apt:
+        name:
+          - openjdk-{{ java_version }}-jdk
+          - unzip
+          - wget
+          - curl
+          - gnupg2
+          - software-properties-common
+          - ufw
+        state: present
+
+    - name: Verificar versión de Java instalada
+      command: java -version
+      register: java_version_output
+      changed_when: false
+
+    - name: Mostrar versión de Java
+      debug:
+        msg: "{{ java_version_output.stderr_lines }}"
+
+    # ============================================
+    # 2. CONFIGURACIÓN POSTGRESQL
+    # ============================================
+    - name: Agregar repositorio PostgreSQL
+      shell: |
+        echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list
+        wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add -
+      args:
+        creates: /etc/apt/sources.list.d/pgdg.list
+
+    - name: Instalar PostgreSQL
+      apt:
+        name:
+          - postgresql-{{ postgres_version }}
+          - postgresql-contrib-{{ postgres_version }}
+          - python3-psycopg2
+        state: present
+        update_cache: yes
+
+    - name: Asegurar que PostgreSQL está iniciado
+      systemd:
+        name: postgresql
+        state: started
+        enabled: yes
+
+    - name: Crear usuario de base de datos para SonarQube
+      become_user: postgres
+      postgresql_user:
+        name: "{{ sonar_db_user }}"
+        password: "{{ sonar_db_password }}"
+        role_attr_flags: CREATEDB,NOSUPERUSER
+        state: present
+
+    - name: Crear base de datos SonarQube
+      become_user: postgres
+      postgresql_db:
+        name: "{{ sonar_db_name }}"
+        owner: "{{ sonar_db_user }}"
+        encoding: UTF8
+        template: template0
+        state: present
+
+    # ============================================
+    # 3. AJUSTES DEL SISTEMA PARA SONARQUBE
+    # ============================================
+    - name: Configurar límites del sistema (vm.max_map_count)
+      sysctl:
+        name: vm.max_map_count
+        value: "262144"
+        state: present
+        reload: yes
+      # Elasticsearch (usado por SonarQube) requiere este ajuste
+
+    - name: Configurar límites del sistema (fs.file-max)
+      sysctl:
+        name: fs.file-max
+        value: "65536"
+        state: present
+        reload: yes
+
+    - name: Configurar límites de usuario para SonarQube
+      pam_limits:
+        domain: "{{ sonar_user }}"
+        limit_type: "{{ item.type }}"
+        limit_item: "{{ item.item }}"
+        value: "{{ item.value }}"
+      loop:
+        - { type: 'soft', item: 'nofile', value: '65536' }
+        - { type: 'hard', item: 'nofile', value: '65536' }
+        - { type: 'soft', item: 'nproc', value: '4096' }
+        - { type: 'hard', item: 'nproc', value: '4096' }
+
+    # ============================================
+    # 4. INSTALACIÓN SONARQUBE
+    # ============================================
+    - name: Crear usuario y grupo para SonarQube
+      user:
+        name: "{{ sonar_user }}"
+        group: "{{ sonar_group }}"
+        system: yes
+        create_home: no
+        shell: /bin/bash
+
+    - name: Crear directorios para SonarQube
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: "{{ sonar_user }}"
+        group: "{{ sonar_group }}"
+        mode: '0755'
+      loop:
+        - "{{ sonar_install_dir }}"
+        - "{{ sonar_data_dir }}/data"
+        - "{{ sonar_data_dir }}/temp"
+        - "{{ sonar_data_dir }}/logs"
+
+    - name: Verificar si SonarQube ya está instalado
+      stat:
+        path: "{{ sonar_install_dir }}/bin"
+      register: sonar_installed
+
+    - name: Descargar SonarQube
+      get_url:
+        url: "{{ sonarqube_download_url }}"
+        dest: "/tmp/sonarqube-{{ sonarqube_version }}.zip"
+        mode: '0644'
+      when: not sonar_installed.stat.exists
+
+    - name: Extraer SonarQube
+      unarchive:
+        src: "/tmp/sonarqube-{{ sonarqube_version }}.zip"
+        dest: "/tmp"
+        remote_src: yes
+      when: not sonar_installed.stat.exists
+
+    - name: Mover archivos de SonarQube al directorio de instalación
+      shell: |
+        cp -r /tmp/sonarqube-{{ sonarqube_version }}/* {{ sonar_install_dir }}/
+        chown -R {{ sonar_user }}:{{ sonar_group }} {{ sonar_install_dir }}
+      when: not sonar_installed.stat.exists
+
+    - name: Limpiar archivos temporales
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "/tmp/sonarqube-{{ sonarqube_version }}.zip"
+        - "/tmp/sonarqube-{{ sonarqube_version }}"
+      when: not sonar_installed.stat.exists
+
+    # ============================================
+    # 5. CONFIGURACIÓN SONARQUBE
+    # ============================================
+    - name: Configurar sonar.properties
+      template:
+        src: templates/sonar.properties.j2
+        dest: "{{ sonar_install_dir }}/conf/sonar.properties"
+        owner: "{{ sonar_user }}"
+        group: "{{ sonar_group }}"
+        mode: '0644'
+      notify: restart sonarqube
+
+    - name: Configurar wrapper.conf (memoria Java)
+      lineinfile:
+        path: "{{ sonar_install_dir }}/conf/wrapper.conf"
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+      loop:
+        - { regexp: '^wrapper.java.additional.5=', line: 'wrapper.java.additional.5=-Xmx2048m' }
+        - { regexp: '^wrapper.java.additional.6=', line: 'wrapper.java.additional.6=-Xms512m' }
+      notify: restart sonarqube
+
+    # ============================================
+    # 6. CONFIGURACIÓN SYSTEMD
+    # ============================================
+    - name: Crear servicio systemd para SonarQube
+      template:
+        src: templates/sonarqube.service.j2
+        dest: /etc/systemd/system/sonarqube.service
+        mode: '0644'
+      notify: restart sonarqube
+
+    - name: Recargar configuración systemd
+      systemd:
+        daemon_reload: yes
+
+    - name: Habilitar e iniciar servicio SonarQube
+      systemd:
+        name: sonarqube
+        enabled: yes
+        state: started
+
+    # ============================================
+    # 7. CONFIGURACIÓN FIREWALL
+    # ============================================
+    - name: Habilitar UFW
+      ufw:
+        state: enabled
+        policy: deny
+
+    - name: Permitir SSH
+      ufw:
+        rule: allow
+        port: '22'
+        proto: tcp
+
+    - name: Permitir puerto SonarQube (9000)
+      ufw:
+        rule: allow
+        port: '9000'
+        proto: tcp
+        comment: 'SonarQube web interface'
+      # NOTA: En producción, restringir a IPs específicas o VNet
+
+    - name: Recargar UFW
+      ufw:
+        state: reloaded
+
+    # ============================================
+    # 8. ESPERAR A QUE SONARQUBE ESTÉ LISTO
+    # ============================================
+    - name: Esperar a que SonarQube esté disponible (puede tardar 2-3 minutos)
+      uri:
+        url: "http://localhost:9000/api/system/status"
+        method: GET
+        status_code: 200
+      register: result
+      until: result.status == 200 and result.json.status == "UP"
+      retries: 30
+      delay: 10
+
+    - name: Mostrar estado de SonarQube
+      debug:
+        msg: "SonarQube está disponible en http://{{ ansible_default_ipv4.address }}:9000"
+
+  # ============================================
+  # HANDLERS
+  # ============================================
+  handlers:
+    - name: restart sonarqube
+      systemd:
+        name: sonarqube
+        state: restarted
+
+# ============================================
+# TEMPLATES NECESARIOS
+# ============================================
+# Crear archivo: ansible/templates/sonar.properties.j2
+# Crear archivo: ansible/templates/sonarqube.service.j2

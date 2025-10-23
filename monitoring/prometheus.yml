@@ -1,0 +1,15 @@
+# monitoring/prometheus.yml
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'react-chat-server'
+    static_configs:
+      - targets: ['server:4000']   # 'server' es el nombre del servicio en docker-compose
+        labels:
+          env: dev
+
+  - job_name: 'node-exporter'
+    static_configs:
+      - targets: ['node-exporter:9100']
